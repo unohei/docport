@@ -204,12 +204,13 @@ export default function App() {
   }, [session]);
 
   const sendMagicLink = async () => {
+    const redirectTo = import.meta.env.VITE_SITE_URL || window.location.origin;
+
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: {
-        emailRedirectTo: window.location.origin, // 本番なら pages.dev / ローカルなら localhost
-      },
+      options: { emailRedirectTo: redirectTo },
     });
+
     if (error) alert(error.message);
     else alert("メール送信しました（届いたリンクを開いてログイン）");
   };

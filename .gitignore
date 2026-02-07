@@ -32,3 +32,4 @@ coverage/
 # Python virtual environment
 .venv/
 venv/
+api/.venv/

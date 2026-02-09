@@ -56,41 +56,72 @@ export default function App() {
   const [tab, setTab] = useState("inbox"); // inbox | send | sent
   const [loading, setLoading] = useState(true);
 
-  const [profile, setProfile] = useState(null);
+  // ★メールリンク経由タブ判定（このフラグが“2タブ違和感”を減らす）
+  const [authReturn, setAuthReturn] = useState(false);
+
+  // data
+  const [profile, setProfile] = useState(null); // { hospital_id }
   const [hospitals, setHospitals] = useState([]);
   const [inboxDocs, setInboxDocs] = useState([]);
   const [sentDocs, setSentDocs] = useState([]);
 
+  // send form
   const [toHospitalId, setToHospitalId] = useState("");
   const [comment, setComment] = useState("");
   const [pdfFile, setPdfFile] = useState(null);
   const [sending, setSending] = useState(false);
 
+  // login
   const [email, setEmail] = useState("");
 
+  // filters
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [showExpired, setShowExpired] = useState(false);
   const [qInbox, setQInbox] = useState("");
   const [qSent, setQSent] = useState("");
 
+  // breakpoints
   const isMobile = useMediaQuery("(max-width: 820px)");
   const isNarrow = useMediaQuery("(max-width: 1024px)");
 
   // ロゴサイズ（ここだけ触ればOK）
-  const logoLoginSize = isMobile ? 72 : 200;
-  const logoTopbarSize = isMobile ? 28 : 120;
+  const logoLoginSize = isMobile ? 72 : 180;
+  const logoTopbarSize = isMobile ? 28 : 80;
 
   // 病院アイコンサイズ（ここだけ触ればOK）
-  const hospitalIconTopbarSize = isMobile ? 22 : 50;
+  const hospitalIconTopbarSize = isMobile ? 22 : 34;
 
   useEffect(() => {
+    const hasAuthParams =
+      typeof window !== "undefined" &&
+      (window.location.search || window.location.hash);
+
+    // 「メールリンクを開いたタブ」っぽいならフラグON
+    if (hasAuthParams) setAuthReturn(true);
+
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session ?? null);
       setLoading(false);
+
+      // URLに ?code= / #... が付いてたら消す（authReturnフラグは残す）
+      if (data.session && hasAuthParams) {
+        window.history.replaceState({}, document.title, "/");
+      }
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
       setSession(sess);
+
+      const nowHasAuthParams =
+        typeof window !== "undefined" &&
+        (window.location.search || window.location.hash);
+
+      if (nowHasAuthParams) setAuthReturn(true);
+
+      // ログイン成立＋URLに認証情報が付いてたら掃除
+      if (sess && nowHasAuthParams) {
+        window.history.replaceState({}, document.title, "/");
+      }
     });
 
     return () => sub.subscription.unsubscribe();
@@ -169,7 +200,7 @@ export default function App() {
     }
     setProfile(prof);
 
-    // ★ icon_url を取得に含める（ここ重要）
+    // ★ icon_url を取得に含める
     const { data: hs, error: hsErr } = await supabase
       .from("hospitals")
       .select("id, name, code, icon_url")
@@ -205,13 +236,7 @@ export default function App() {
   }, [session]);
 
   const sendMagicLink = async () => {
-    const redirectTo = import.meta.env.VITE_SITE_URL || window.location.origin;
-
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: redirectTo },
-    });
-
+    const { error } = await supabase.auth.signInWithOtp({ email });
     if (error) alert(error.message);
     else alert("メール送信しました（届いたリンクを開いてログイン）");
   };
@@ -229,6 +254,7 @@ export default function App() {
     setShowExpired(false);
     setQInbox("");
     setQSent("");
+    setAuthReturn(false);
   };
 
   // ---- R2 presign helpers ----
@@ -410,25 +436,25 @@ export default function App() {
           bg: "rgba(59, 130, 246, 0.12)",
           text: "#1d4ed8",
           border: "rgba(29, 78, 216, 0.22)",
-        }; // 未読(青)
+        };
       case "DOWNLOADED":
         return {
           bg: "rgba(16, 185, 129, 0.12)",
           text: "#047857",
           border: "rgba(4, 120, 87, 0.22)",
-        }; // 既読(緑)
+        };
       case "CANCELLED":
         return {
           bg: "rgba(100, 116, 139, 0.14)",
           text: "#334155",
           border: "rgba(51, 65, 85, 0.22)",
-        }; // 取消(グレー)
+        };
       case "ARCHIVED":
         return {
           bg: "rgba(168, 85, 247, 0.12)",
           text: "#6d28d9",
           border: "rgba(109, 40, 217, 0.22)",
-        }; // アーカイブ(紫)
+        };
       default:
         return {
           bg: "rgba(15, 23, 42, 0.08)",
@@ -438,7 +464,77 @@ export default function App() {
     }
   };
 
+  // ---- Rendering ----
   if (loading) return <div style={{ padding: 24 }}>Loading...</div>;
+
+  // ★メールリンクで開いたタブが「ログイン済み」になったら、完了画面を出す
+  // これで“2タブとも普通にアプリが動く”違和感を減らす
+  if (session && authReturn) {
+    return (
+      <Root>
+        <div style={{ padding: 24 }}>
+          <div style={{ maxWidth: 520, margin: "0 auto" }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <img
+                src={DocPortLogo}
+                alt="DocPort"
+                style={{ width: 44, height: 44, opacity: 0.95 }}
+              />
+              <div>
+                <div
+                  style={{ fontWeight: 800, fontSize: 18, color: THEME.text }}
+                >
+                  ログイン完了
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.7, color: THEME.text }}>
+                  このタブは閉じてOKです（元のDocPortタブへ戻ってください）
+                </div>
+              </div>
+            </div>
+
+            <div
+              style={{
+                marginTop: 18,
+                display: "flex",
+                gap: 10,
+                flexWrap: "wrap",
+              }}
+            >
+              <PrimaryButton
+                onClick={() => {
+                  // 通常表示に戻す（=このタブでもアプリを使いたい場合用）
+                  setAuthReturn(false);
+                  window.history.replaceState({}, document.title, "/");
+                }}
+              >
+                DocPortを開く
+              </PrimaryButton>
+
+              <SecondaryButton
+                onClick={() => {
+                  // メールアプリ起点だと閉じれないことが多い（その場合は手動でOK）
+                  window.close();
+                }}
+              >
+                このタブを閉じる
+              </SecondaryButton>
+            </div>
+
+            <p
+              style={{
+                marginTop: 12,
+                fontSize: 12,
+                opacity: 0.6,
+                color: THEME.text,
+              }}
+            >
+              ※「閉じる」が効かない場合は、手動で閉じてください
+            </p>
+          </div>
+        </div>
+      </Root>
+    );
+  }
 
   // ------- LOGIN -------
   if (!session) {
@@ -529,8 +625,8 @@ export default function App() {
             flexWrap: "wrap",
           }}
         >
-          {/* ロゴ + タイトル + 自院アイコン（自然に横並び） */}
-          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          {/* ロゴ + タイトル */}
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <img
               src={DocPortLogo}
               alt="DocPort"
@@ -541,9 +637,8 @@ export default function App() {
                 flexShrink: 0,
               }}
             />
-
             <div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: THEME.text }}>
+              <div style={{ fontSize: 22, fontWeight: 800, color: THEME.text }}>
                 DocPort
               </div>
 
@@ -552,10 +647,10 @@ export default function App() {
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  flexWrap: "wrap",
-                  fontSize: 16,
+                  fontSize: 12,
                   opacity: 0.7,
                   color: THEME.text,
+                  flexWrap: "wrap",
                 }}
               >
                 <span>
@@ -564,25 +659,20 @@ export default function App() {
                     : "所属：（profiles未設定）"}
                 </span>
 
-                {/* ★ 自院アイコン（テキストと別レイアウトで崩れにくい） */}
-                {myHospitalId && (
+                {myHospitalId ? (
                   <img
                     src={iconOf(myHospitalId)}
                     alt="hospital icon"
                     style={{
                       width: hospitalIconTopbarSize,
                       height: hospitalIconTopbarSize,
-                      borderRadius: 6,
+                      borderRadius: 8,
                       objectFit: "cover",
-                      opacity: 0.95,
                       border: `1px solid ${THEME.border}`,
-                    }}
-                    onError={(e) => {
-                      // 画像URL壊れてても表示を保つ
-                      e.currentTarget.src = "/default-hospital.svg";
+                      opacity: 0.95,
                     }}
                   />
-                )}
+                ) : null}
               </div>
             </div>
           </div>
@@ -677,9 +767,6 @@ export default function App() {
               setPdfFile={setPdfFile}
               sending={sending}
               createDocument={createDocument}
-              // 将来：一覧や候補表示で使えるように渡しておく
-              iconOf={iconOf}
-              nameOf={nameOf}
             />
           )}
 
@@ -696,7 +783,6 @@ export default function App() {
               setQInbox={setQInbox}
               filteredInboxDocs={filteredInboxDocs}
               nameOf={nameOf}
-              iconOf={iconOf}
               fmt={fmt}
               isExpired={isExpired}
               downloadDocument={downloadDocument}
@@ -716,7 +802,6 @@ export default function App() {
               setQSent={setQSent}
               filteredSentDocs={filteredSentDocs}
               nameOf={nameOf}
-              iconOf={iconOf}
               fmt={fmt}
               isExpired={isExpired}
               cancelDocument={cancelDocument}

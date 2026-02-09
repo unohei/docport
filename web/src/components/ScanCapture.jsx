@@ -1,20 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PDFDocument } from "pdf-lib";
 
-/**
- * ScanCapture.jsx
- * - getUserMedia でカメラ起動
- * - OpenCV.js で書類検出（エッジ→輪郭→四隅推定）
- * - Perspective Transform で台形補正
- * - adaptive threshold で白黒最適化（FAXっぽく）
- * - pdf-lib で 1ページPDF化
- *
- * props:
- * - onDone(file: File): スキャン結果PDFを File として返す（例: setPdfFile(file)）
- * - onCancel(): 閉じるなど
- * - filenameBase?: "紹介状" など（省略可）
- * - preferRearCamera?: boolean（既定 true）
- */
 export default function ScanCapture({
   onDone,
   onCancel,
@@ -22,12 +8,17 @@ export default function ScanCapture({
   preferRearCamera = true,
 }) {
   const videoRef = useRef(null);
-  const rawCanvasRef = useRef(null); // キャプチャ用（元画像）
-  const outCanvasRef = useRef(null); // 補正結果（白黒）
+  const rawCanvasRef = useRef(null);
+  const outCanvasRef = useRef(null);
+
   const [camOn, setCamOn] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [opencvReady, setOpenCvReady] = useState(false);
+
+  // ★ 追加：前後カメラ切替状態
+  const [useRear, setUseRear] = useState(!!preferRearCamera);
+
   const streamRef = useRef(null);
 
   const canUseMedia =
@@ -37,7 +28,6 @@ export default function ScanCapture({
   useEffect(() => {
     let t = null;
     const check = () => {
-      // OpenCV.js は window.cv が生える
       if (typeof window !== "undefined" && window.cv && window.cv.Mat) {
         setOpenCvReady(true);
         return;
@@ -52,37 +42,67 @@ export default function ScanCapture({
   const stopCamera = async () => {
     try {
       const s = streamRef.current;
-      if (s) {
-        s.getTracks().forEach((tr) => tr.stop());
-      }
+      if (s) s.getTracks().forEach((tr) => tr.stop());
       streamRef.current = null;
+
+      const v = videoRef.current;
+      if (v) v.srcObject = null;
+
       setCamOn(false);
     } catch {
       // ignore
     }
   };
 
-  const startCamera = async () => {
+  // ★ 強化：exact→ideal フォールバック + 明示 play
+  const startCamera = async (rear = useRear) => {
     setErr("");
     if (!canUseMedia) {
       setErr("このブラウザではカメラが使えません。");
       return;
     }
+
     try {
-      const constraints = {
+      // 切替時に前streamを止める
+      await stopCamera();
+
+      const constraintsExact = {
         audio: false,
-        video: preferRearCamera
-          ? { facingMode: { ideal: "environment" } }
-          : { facingMode: "user" },
+        video: {
+          facingMode: { exact: rear ? "environment" : "user" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
       };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      const constraintsIdeal = {
+        audio: false,
+        video: {
+          facingMode: rear ? "environment" : "user",
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+      };
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraintsExact);
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia(constraintsIdeal);
+      }
+
       streamRef.current = stream;
 
       const v = videoRef.current;
       if (v) {
         v.srcObject = stream;
+
+        // ★ 重要：Androidでも iOSでも効く
         await v.play();
+        // デバッグしたい時はこれを見る
+        // console.log("Camera started:", stream.getVideoTracks()[0]?.getSettings());
       }
+
       setCamOn(true);
     } catch (e) {
       setErr(e?.message ?? String(e));
@@ -91,7 +111,6 @@ export default function ScanCapture({
   };
 
   useEffect(() => {
-    // unmount cleanup
     return () => {
       stopCamera();
     };
@@ -105,8 +124,6 @@ export default function ScanCapture({
   );
 
   function orderQuadPoints(pts) {
-    // pts: [{x,y} x4]
-    // 返り値: [tl, tr, br, bl]
     const sum = pts.map((p) => p.x + p.y);
     const diff = pts.map((p) => p.x - p.y);
     const tl = pts[sum.indexOf(Math.min(...sum))];
@@ -123,14 +140,12 @@ export default function ScanCapture({
   }
 
   async function canvasToPdfFile(canvas, outName) {
-    // canvas を PNG化 → PDFに貼る
     const dataUrl = canvas.toDataURL("image/png");
     const pngBytes = await fetch(dataUrl).then((r) => r.arrayBuffer());
 
     const pdf = await PDFDocument.create();
     const img = await pdf.embedPng(pngBytes);
 
-    // A4固定じゃなく、画像サイズに合わせる（“そのまま”）
     const w = img.width;
     const h = img.height;
 
@@ -156,11 +171,16 @@ export default function ScanCapture({
 
     setBusy(true);
     try {
-      // 1) video → rawCanvas に描画（高解像度ほど重いのでほどほどに）
       const vw = video.videoWidth;
       const vh = video.videoHeight;
 
-      // 端末によって巨大になるので上限を設ける（処理速度優先）
+      // ★ 映像自体が取れてない時のガード（黒画面切り分け用）
+      if (!vw || !vh) {
+        throw new Error(
+          "カメラ映像が取得できていません。端末のブラウザ/権限を確認してください。",
+        );
+      }
+
       const MAX_W = 1400;
       const scale = vw > MAX_W ? MAX_W / vw : 1;
       const cw = Math.round(vw * scale);
@@ -171,20 +191,16 @@ export default function ScanCapture({
       const ctx = rawCanvas.getContext("2d");
       ctx.drawImage(video, 0, 0, cw, ch);
 
-      // 2) OpenCV: 書類検出（輪郭→四隅）
-      const src = cv.imread(rawCanvas); // RGBA
+      const src = cv.imread(rawCanvas);
       const gray = new cv.Mat();
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
-      // ノイズ除去（軽く）
       const blur = new cv.Mat();
       cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
 
-      // エッジ検出
       const edges = new cv.Mat();
       cv.Canny(blur, edges, 60, 180);
 
-      // 輪郭抽出
       const contours = new cv.MatVector();
       const hierarchy = new cv.Mat();
       cv.findContours(
@@ -206,7 +222,6 @@ export default function ScanCapture({
         cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
 
         if (approx.rows === 4) {
-          // 4点ポリゴン
           const area = cv.contourArea(approx);
           if (area > bestArea) {
             bestArea = area;
@@ -219,14 +234,12 @@ export default function ScanCapture({
         cnt.delete();
       }
 
-      // 後処理: contour mats
       contours.delete();
       hierarchy.delete();
       edges.delete();
       blur.delete();
 
       if (!bestQuad || bestArea < cw * ch * 0.12) {
-        // 書類を見つけられなかった（閾値は適当。現場で調整）
         gray.delete();
         src.delete();
         bestQuad?.delete?.();
@@ -235,8 +248,6 @@ export default function ScanCapture({
         );
       }
 
-      // bestQuad → points
-      // approx は (x,y) が 4行
       const pts = [];
       for (let r = 0; r < 4; r++) {
         pts.push({
@@ -246,7 +257,6 @@ export default function ScanCapture({
       }
       const [tl, tr, br, bl] = orderQuadPoints(pts);
 
-      // 出力サイズ（補正後の縦横）
       const widthA = dist(br, bl);
       const widthB = dist(tr, tl);
       const maxW = Math.max(widthA, widthB);
@@ -255,10 +265,9 @@ export default function ScanCapture({
       const heightB = dist(tl, bl);
       const maxH = Math.max(heightA, heightB);
 
-      const dstW = Math.max(800, Math.round(maxW)); // 最低幅を確保
+      const dstW = Math.max(800, Math.round(maxW));
       const dstH = Math.round(maxW > 0 ? (maxH / maxW) * dstW : maxH);
 
-      // 3) Perspective Transform
       const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
         tl.x,
         tl.y,
@@ -293,10 +302,7 @@ export default function ScanCapture({
         new cv.Scalar(),
       );
 
-      // 4) 白黒最適化（FAXっぽく）
       const bw = new cv.Mat();
-      // adaptiveThreshold: 255, ADAPTIVE_MEAN or GAUSSIAN
-      // blockSize は奇数、C は微調整
       cv.adaptiveThreshold(
         warped,
         bw,
@@ -307,12 +313,10 @@ export default function ScanCapture({
         10,
       );
 
-      // 5) outCanvasへ描画
       outCanvas.width = dstW;
       outCanvas.height = dstH;
       cv.imshow(outCanvas, bw);
 
-      // cleanup mats
       bw.delete();
       warped.delete();
       M.delete();
@@ -322,7 +326,6 @@ export default function ScanCapture({
       gray.delete();
       src.delete();
 
-      // 6) PDF化 → File
       const ymd = new Date();
       const stamp =
         `${ymd.getFullYear()}` +
@@ -335,9 +338,7 @@ export default function ScanCapture({
       const outName = `${filenameBase}_${stamp}.pdf`;
       const file = await canvasToPdfFile(outCanvas, outName);
 
-      // スキャン成功したら、カメラ止めてもOK（好み）
       await stopCamera();
-
       onDone?.(file);
     } catch (e) {
       setErr(e?.message ?? String(e));
@@ -363,7 +364,7 @@ export default function ScanCapture({
       {!camOn ? (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button
-            onClick={startCamera}
+            onClick={() => startCamera(useRear)}
             disabled={busy || !opencvReady}
             style={{
               padding: "10px 14px",
@@ -375,6 +376,22 @@ export default function ScanCapture({
             }}
           >
             📷 カメラを起動
+          </button>
+
+          {/* ★追加：前後切替（起動前でも押せる） */}
+          <button
+            onClick={() => setUseRear((v) => !v)}
+            disabled={busy}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid rgba(15, 23, 42, 0.12)",
+              background: "transparent",
+              fontWeight: 700,
+              cursor: busy ? "not-allowed" : "pointer",
+            }}
+          >
+            {useRear ? "背面カメラ" : "前面カメラ"}
           </button>
 
           <button
@@ -401,6 +418,7 @@ export default function ScanCapture({
           <div style={{ display: "grid", gap: 10 }}>
             <video
               ref={videoRef}
+              autoPlay
               playsInline
               muted
               style={{
@@ -424,6 +442,26 @@ export default function ScanCapture({
                 }}
               >
                 {busy ? "処理中..." : "📄 撮ってPDF化"}
+              </button>
+
+              {/* ★追加：起動後の切替（押したら即再起動） */}
+              <button
+                onClick={async () => {
+                  const next = !useRear;
+                  setUseRear(next);
+                  await startCamera(next);
+                }}
+                disabled={busy}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(15, 23, 42, 0.12)",
+                  background: "transparent",
+                  fontWeight: 700,
+                  cursor: busy ? "not-allowed" : "pointer",
+                }}
+              >
+                カメラ切替
               </button>
 
               <button
@@ -460,7 +498,6 @@ export default function ScanCapture({
         </>
       )}
 
-      {/* hidden raw canvas */}
       <canvas ref={rawCanvasRef} style={{ display: "none" }} />
 
       {err ? (

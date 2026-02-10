@@ -1,6 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PDFDocument } from "pdf-lib";
 
+/**
+ * ScanCapture.jsx
+ * - getUserMedia でカメラ起動
+ * - OpenCV.js で書類検出（エッジ→輪郭→四隅推定）
+ * - Perspective Transform で台形補正
+ * - adaptive threshold で白黒最適化（FAXっぽく）
+ * - pdf-lib で 1ページPDF化
+ *
+ * props:
+ * - onDone(file: File): スキャン結果PDFを File として返す
+ * - onCancel(): 閉じるなど
+ * - filenameBase?: "紹介状" など（省略可）
+ * - preferRearCamera?: boolean（既定 true）
+ */
 export default function ScanCapture({
   onDone,
   onCancel,
@@ -8,19 +22,18 @@ export default function ScanCapture({
   preferRearCamera = true,
 }) {
   const videoRef = useRef(null);
-  const rawCanvasRef = useRef(null);
-  const outCanvasRef = useRef(null);
+  const rawCanvasRef = useRef(null); // キャプチャ用（元画像）
+  const outCanvasRef = useRef(null); // 補正結果（白黒）
+  const streamRef = useRef(null);
 
   const [camOn, setCamOn] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [opencvReady, setOpenCvReady] = useState(false);
 
-  // ★ 追加：前後カメラ切替状態
-  const [useRear, setUseRear] = useState(!!preferRearCamera);
-
-  const streamRef = useRef(null);
-  const startingRef = useRef(false);
+  // device switching
+  const [devices, setDevices] = useState([]); // videoinput
+  const [deviceId, setDeviceId] = useState(""); // selected deviceId
 
   const canUseMedia =
     typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
@@ -39,13 +52,31 @@ export default function ScanCapture({
     return () => t && clearTimeout(t);
   }, []);
 
-  // ---- start/stop camera ----
-  const stopCamera = useCallback(() => {
+  // ---- helpers (OpenCV) ----
+  const cv = useMemo(
+    () => (typeof window !== "undefined" ? window.cv : null),
+    [],
+  );
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const refreshDevices = async () => {
+    try {
+      if (!navigator?.mediaDevices?.enumerateDevices) return;
+      const list = await navigator.mediaDevices.enumerateDevices();
+      const vids = list.filter((d) => d.kind === "videoinput");
+      setDevices(vids);
+      return vids;
+    } catch {
+      // ignore
+      return [];
+    }
+  };
+
+  const stopCamera = async () => {
     try {
       const s = streamRef.current;
-      if (s) {
-        s.getTracks().forEach((tr) => tr.stop());
-      }
+      if (s) s.getTracks().forEach((tr) => tr.stop());
       streamRef.current = null;
 
       const v = videoRef.current;
@@ -55,95 +86,91 @@ export default function ScanCapture({
     } catch {
       // ignore
     }
-  }, []);
+  };
 
-  /**
-   * startCamera
-   * - getUserMedia は多重起動させない（許可ダイアログ後に競合すると落ちがち）
-   * - exact→ideal の facingMode フォールバック
-   * - iOS/Safari 対策で play() を明示
-   */
-  const startCamera = useCallback(
-    async (rear = useRear) => {
-      setErr("");
-      if (!canUseMedia) {
-        setErr("このブラウザではカメラが使えません。");
-        return;
+  const startCamera = async (opts = {}) => {
+    const { forceDeviceId } = opts;
+
+    setErr("");
+    if (!canUseMedia) {
+      setErr("このブラウザではカメラが使えません。");
+      return;
+    }
+
+    // 先に video を必ず描画しておく（←これが黒画面/要素なしエラー対策）
+    setCamOn(true);
+    await sleep(0);
+
+    try {
+      // 既に起動中なら一旦止める（切替時もここに来る）
+      await stopCamera();
+      setCamOn(true);
+      await sleep(0);
+
+      // permission後じゃないとlabelが空のことが多いので、
+      // まず constraints を決めて getUserMedia → その後 enumerate でデバイス情報を更新する
+      const constraints = {
+        audio: false,
+        video: (() => {
+          if (forceDeviceId || deviceId) {
+            return { deviceId: { exact: forceDeviceId || deviceId } };
+          }
+          // 端末により facingMode が効く/効かないがあるので "ideal" にしておく
+          return preferRearCamera
+            ? { facingMode: { ideal: "environment" } }
+            : { facingMode: { ideal: "user" } };
+        })(),
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current = stream;
+
+      const v = videoRef.current;
+      if (!v) {
+        throw new Error("video 要素が見つかりません（描画タイミング）");
       }
-      if (startingRef.current) return;
-      startingRef.current = true;
 
-      try {
-        // 切替時/再起動時に前streamを止める
-        stopCamera();
+      v.srcObject = stream;
 
-        const constraintsExact = {
-          audio: false,
-          video: {
-            facingMode: { exact: rear ? "environment" : "user" },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-        };
+      // iOS/一部Androidで play() が間に合わないことがあるので少し待つ
+      await sleep(0);
+      await v.play();
 
-        const constraintsIdeal = {
-          audio: false,
-          video: {
-            facingMode: rear ? "environment" : "user",
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-        };
+      // デバイス一覧を更新（permission後の方がlabelが入る）
+      const vids = (await refreshDevices()) || [];
 
-        let stream;
-        try {
-          stream = await navigator.mediaDevices.getUserMedia(constraintsExact);
-        } catch {
-          stream = await navigator.mediaDevices.getUserMedia(constraintsIdeal);
+      // 初回だけ “背面っぽい” デバイスが見つかったら自動選択して切り替え（任意）
+      if (!forceDeviceId && !deviceId && vids.length >= 2 && preferRearCamera) {
+        const rearLike =
+          vids.find((d) => /back|rear|environment/i.test(d.label)) || null;
+        if (rearLike?.deviceId) {
+          setDeviceId(rearLike.deviceId);
+          // 今のstreamは停止して背面デバイスで取り直す
+          await stopCamera();
+          await sleep(0);
+          return startCamera({ forceDeviceId: rearLike.deviceId });
         }
-
-        streamRef.current = stream;
-
-        const v = videoRef.current;
-        if (!v) throw new Error("video 要素が見つかりません");
-
-        v.srcObject = stream;
-
-        // iOS/Safari/一部Androidで、ここが無いと黒画面や即停止になりやすい
-        try {
-          await v.play();
-        } catch {
-          // play() が落ちる環境もあるので、ここでは致命扱いにしない
-        }
-
-        setCamOn(true);
-      } catch (e) {
-        console.error("camera error:", e);
-        setErr(
-          e?.name
-            ? `${e.name}${e?.message ? `: ${e.message}` : ""}`
-            : (e?.message ?? String(e)),
-        );
-        stopCamera();
-        setCamOn(false);
-      } finally {
-        startingRef.current = false;
       }
-    },
-    [canUseMedia, stopCamera, useRear],
-  );
+
+      // selected deviceId を保持（取れた範囲で）
+      if (forceDeviceId) setDeviceId(forceDeviceId);
+      else if (!deviceId && vids?.[0]?.deviceId) setDeviceId(vids[0].deviceId);
+
+      setCamOn(true);
+    } catch (e) {
+      setErr(e?.message ?? String(e));
+      setCamOn(false);
+      await stopCamera();
+    }
+  };
 
   useEffect(() => {
+    // unmount cleanup
     return () => {
       stopCamera();
     };
-  }, [stopCamera]);
-
-  // ---- helpers (OpenCV) ----
-  const cv = useMemo(
-    () => (typeof window !== "undefined" ? window.cv : null),
-    [],
-  );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function orderQuadPoints(pts) {
     const sum = pts.map((p) => p.x + p.y);
@@ -178,7 +205,6 @@ export default function ScanCapture({
     return new File([pdfBytes], outName, { type: "application/pdf" });
   }
 
-  // ---- main scan pipeline ----
   const captureAndProcess = async () => {
     setErr("");
     if (!opencvReady)
@@ -195,11 +221,9 @@ export default function ScanCapture({
     try {
       const vw = video.videoWidth;
       const vh = video.videoHeight;
-
-      // ★ 映像自体が取れてない時のガード（黒画面切り分け用）
       if (!vw || !vh) {
         throw new Error(
-          "カメラ映像が取得できていません。端末のブラウザ/権限を確認してください。",
+          "カメラ映像の準備ができていません（videoWidth/videoHeightが0）。少し待ってから再試行してください。",
         );
       }
 
@@ -360,13 +384,28 @@ export default function ScanCapture({
       const outName = `${filenameBase}_${stamp}.pdf`;
       const file = await canvasToPdfFile(outCanvas, outName);
 
-      stopCamera();
+      await stopCamera();
       onDone?.(file);
     } catch (e) {
       setErr(e?.message ?? String(e));
     } finally {
       setBusy(false);
     }
+  };
+
+  const canSwitch = devices.length >= 2;
+
+  const switchCamera = async () => {
+    setErr("");
+    if (!canSwitch) return;
+
+    // 次のdeviceへ
+    const idx = devices.findIndex((d) => d.deviceId === deviceId);
+    const next = devices[(idx + 1) % devices.length] || devices[0];
+    if (!next?.deviceId) return;
+
+    setDeviceId(next.deviceId);
+    await startCamera({ forceDeviceId: next.deviceId });
   };
 
   return (
@@ -383,10 +422,24 @@ export default function ScanCapture({
         紙を撮影 → 自動で台形補正 → 白黒最適化 → PDFにして「置く」に渡します
       </div>
 
+      {/* ★重要：video は常に描画（camOnで表示/非表示だけ切替） */}
+      <video
+        ref={videoRef}
+        playsInline
+        muted
+        autoPlay
+        style={{
+          width: "100%",
+          borderRadius: 14,
+          background: "#0b1220",
+          display: camOn ? "block" : "none",
+        }}
+      />
+
       {!camOn ? (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button
-            onClick={() => startCamera(useRear)}
+            onClick={() => startCamera()}
             disabled={busy || !opencvReady}
             style={{
               padding: "10px 14px",
@@ -398,22 +451,6 @@ export default function ScanCapture({
             }}
           >
             📷 カメラを起動
-          </button>
-
-          {/* ★追加：前後切替（起動前でも押せる） */}
-          <button
-            onClick={() => setUseRear((v) => !v)}
-            disabled={busy}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 12,
-              border: "1px solid rgba(15, 23, 42, 0.12)",
-              background: "transparent",
-              fontWeight: 700,
-              cursor: busy ? "not-allowed" : "pointer",
-            }}
-          >
-            {useRear ? "背面カメラ" : "前面カメラ"}
           </button>
 
           <button
@@ -437,89 +474,88 @@ export default function ScanCapture({
         </div>
       ) : (
         <>
-          <div style={{ display: "grid", gap: 10 }}>
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              flexWrap: "wrap",
+              marginTop: 10,
+            }}
+          >
+            <button
+              onClick={captureAndProcess}
+              disabled={busy}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid rgba(15, 23, 42, 0.18)",
+                background: "white",
+                fontWeight: 800,
+                cursor: busy ? "not-allowed" : "pointer",
+              }}
+            >
+              {busy ? "処理中..." : "📄 撮ってPDF化"}
+            </button>
+
+            {canSwitch ? (
+              <button
+                onClick={switchCamera}
+                disabled={busy}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(15, 23, 42, 0.12)",
+                  background: "transparent",
+                  fontWeight: 700,
+                  cursor: busy ? "not-allowed" : "pointer",
+                }}
+              >
+                🔁 カメラ切替
+              </button>
+            ) : null}
+
+            <button
+              onClick={stopCamera}
+              disabled={busy}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid rgba(15, 23, 42, 0.12)",
+                background: "transparent",
+                fontWeight: 700,
+                cursor: busy ? "not-allowed" : "pointer",
+              }}
+            >
+              カメラ停止
+            </button>
+
+            <div style={{ fontSize: 12, opacity: 0.7, alignSelf: "center" }}>
+              device:{" "}
+              {deviceId
+                ? devices.find((d) => d.deviceId === deviceId)?.label ||
+                  "selected"
+                : "auto"}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>
+              プレビュー（補正後の白黒）
+            </div>
+            <canvas
+              ref={outCanvasRef}
               style={{
                 width: "100%",
                 borderRadius: 14,
-                background: "#0b1220",
+                border: "1px dashed rgba(15, 23, 42, 0.18)",
+                background: "white",
               }}
             />
-
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button
-                onClick={captureAndProcess}
-                disabled={busy}
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(15, 23, 42, 0.18)",
-                  background: "white",
-                  fontWeight: 800,
-                  cursor: busy ? "not-allowed" : "pointer",
-                }}
-              >
-                {busy ? "処理中..." : "📄 撮ってPDF化"}
-              </button>
-
-              {/* ★追加：起動後の切替（押したら即再起動） */}
-              <button
-                onClick={async () => {
-                  const next = !useRear;
-                  setUseRear(next);
-                  await startCamera(next);
-                }}
-                disabled={busy}
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(15, 23, 42, 0.12)",
-                  background: "transparent",
-                  fontWeight: 700,
-                  cursor: busy ? "not-allowed" : "pointer",
-                }}
-              >
-                カメラ切替
-              </button>
-
-              <button
-                onClick={stopCamera}
-                disabled={busy}
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(15, 23, 42, 0.12)",
-                  background: "transparent",
-                  fontWeight: 700,
-                  cursor: busy ? "not-allowed" : "pointer",
-                }}
-              >
-                カメラ停止
-              </button>
-            </div>
-
-            <div style={{ display: "grid", gap: 10 }}>
-              <div style={{ fontSize: 12, opacity: 0.7 }}>
-                プレビュー（補正後の白黒）
-              </div>
-              <canvas
-                ref={outCanvasRef}
-                style={{
-                  width: "100%",
-                  borderRadius: 14,
-                  border: "1px dashed rgba(15, 23, 42, 0.18)",
-                  background: "white",
-                }}
-              />
-            </div>
           </div>
         </>
       )}
 
+      {/* hidden raw canvas */}
       <canvas ref={rawCanvasRef} style={{ display: "none" }} />
 
       {err ? (

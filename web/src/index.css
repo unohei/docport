@@ -29,6 +29,12 @@ body {
   /* Viteテンプレの中央寄せを消す */
   display: block;
   min-width: 320px;
+
+  background-color: #f8fbfd; /* 少しだけ青み */
+  background-image:
+    linear-gradient(#e6edf2 1px, transparent 1px),
+    linear-gradient(90deg, #e6edf2 1px, transparent 1px);
+  background-size: 24px 24px;
 }
 
 /* 横幅の揺れ（スクロールバー出入り）対策：PCで効く */

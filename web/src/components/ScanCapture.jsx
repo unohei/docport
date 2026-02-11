@@ -416,9 +416,9 @@ export default function ScanCapture({
       }}
     >
       <div style={{ fontWeight: 900, marginBottom: 6 }}>スキャンして置く</div>
-      <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 12 }}>
+      {/* <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 12 }}>
         紙を撮影 → 自動で台形補正 → カラーPDFにして「置く」に渡します
-      </div>
+      </div> */}
 
       <video
         ref={videoRef}

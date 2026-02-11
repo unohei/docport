@@ -53,7 +53,7 @@ console.log("API_BASE =", API_BASE);
 
 export default function App() {
   const [session, setSession] = useState(null);
-  const [tab, setTab] = useState("inbox"); // inbox | send | sent
+  const [tab, setTab] = useState("send"); // inbox | send | sent
   const [loading, setLoading] = useState(true);
 
   // ★メールリンク経由タブ判定（このフラグが“2タブ違和感”を減らす）

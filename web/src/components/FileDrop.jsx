@@ -2,42 +2,19 @@ import React, { useMemo, useState } from "react";
 import { THEME, Card, Pill } from "./ui/primitives";
 
 export default function FileDrop({
-  onFile, // (file: File) => void
+  onFile,
   accept = "application/pdf",
   disabled = false,
-  title = "PDFをここに置く",
-  hint = "ドラッグ&ドロップ / クリックで選択",
+  title = "ここに置く",
+  hint = "ドラッグ & タップで選択",
 }) {
   const [dragOver, setDragOver] = useState(false);
   const [err, setErr] = useState("");
-
-  const tone = useMemo(() => {
-    if (disabled) {
-      return {
-        bg: "rgba(148, 163, 184, 0.15)",
-        border: "rgba(148, 163, 184, 0.35)",
-        text: "rgba(15,23,42,0.65)",
-      };
-    }
-    if (dragOver) {
-      return {
-        bg: "rgba(15, 23, 42, 0.06)",
-        border: "rgba(15, 23, 42, 0.35)",
-        text: THEME.text,
-      };
-    }
-    return {
-      bg: "rgba(255,255,255,0.75)",
-      border: THEME.border,
-      text: THEME.text,
-    };
-  }, [dragOver, disabled]);
 
   const pickFirst = (files) => (files && files.length ? files[0] : null);
 
   const validate = (file) => {
     if (!file) return null;
-    // type が空になる環境もあるので、拡張子も見る
     const isPdf =
       file.type === "application/pdf" ||
       (file.name || "").toLowerCase().endsWith(".pdf");
@@ -64,81 +41,126 @@ export default function FileDrop({
   const onBrowse = (e) => {
     const file = pickFirst(e.target.files);
     handleFile(file);
-    // 同じファイルを再選択できるように
     e.target.value = "";
   };
+
+  const accent = "#0ea5e9";
 
   return (
     <Card
       style={{
-        padding: 16,
-        borderStyle: "dashed",
-        borderWidth: 2,
-        borderColor: tone.border,
-        background: tone.bg,
-        transition: "120ms ease",
+        padding: 0,
+        border: "none",
+        background: "transparent",
       }}
     >
       <div
         onDragEnter={(e) => {
           e.preventDefault();
-          if (disabled) return;
-          setDragOver(true);
+          if (!disabled) setDragOver(true);
         }}
         onDragOver={(e) => {
           e.preventDefault();
-          if (disabled) return;
-          setDragOver(true);
+          if (!disabled) setDragOver(true);
         }}
         onDragLeave={(e) => {
           e.preventDefault();
           setDragOver(false);
         }}
         onDrop={onDrop}
-        style={{
-          display: "grid",
-          placeItems: "center",
-          textAlign: "center",
-          padding: 18,
-          borderRadius: 12,
-          minHeight: 180,
-          cursor: disabled ? "not-allowed" : "pointer",
-          userSelect: "none",
-        }}
         onClick={() => {
           if (disabled) return;
-          const el = document.getElementById("docport-file-input-hidden");
-          el?.click();
+          document.getElementById("docport-file-input-hidden")?.click();
+        }}
+        style={{
+          position: "relative",
+          borderRadius: 22,
+          padding: "60px 24px",
+          minHeight: 240,
+          cursor: disabled ? "not-allowed" : "pointer",
+          transition: "all 200ms ease",
+          background: "linear-gradient(180deg, #ffffff, #f2f7fb)",
+          border: `1px solid ${dragOver ? accent : "rgba(15,23,42,0.08)"}`,
+          boxShadow: `
+            inset 0 10px 22px rgba(15,23,42,0.10),
+            inset 0 -6px 14px rgba(255,255,255,0.8),
+            ${dragOver ? "0 18px 36px rgba(14,165,233,0.25)" : "0 10px 24px rgba(15,23,42,0.08)"}
+          `,
+          transform: dragOver ? "scale(1.01)" : "scale(1)",
         }}
       >
-        <div style={{ display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 18, fontWeight: 800, color: tone.text }}>
+        {/* 青アクセントバー */}
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 6,
+            borderTopLeftRadius: 22,
+            borderTopRightRadius: 22,
+            background: accent,
+            opacity: 0.6,
+          }}
+        />
+
+        <div
+          style={{
+            display: "grid",
+            gap: 14,
+            textAlign: "center",
+            justifyItems: "center",
+          }}
+        >
+          {/* 紙アイコン */}
+          <div
+            style={{
+              fontSize: 54,
+              transition: "transform 200ms ease",
+              transform: dragOver ? "translateY(-6px)" : "translateY(0)",
+            }}
+          >
+            📄
+          </div>
+
+          <div
+            style={{
+              fontSize: 22,
+              fontWeight: 900,
+              color: THEME.text,
+              letterSpacing: 0.5,
+            }}
+          >
             {title}
           </div>
-          <div style={{ fontSize: 13, opacity: 0.75, color: tone.text }}>
+
+          <div
+            style={{
+              fontSize: 14,
+              opacity: 0.7,
+              color: THEME.text,
+            }}
+          >
             {hint}
           </div>
 
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <Pill
-              tone={{
-                bg: "rgba(15,23,42,0.06)",
-                text: THEME.text,
-                border: "rgba(15,23,42,0.18)",
-              }}
-            >
-              送信ではなく「置く」です
-            </Pill>
-          </div>
+          <Pill
+            tone={{
+              bg: "rgba(14,165,233,0.12)",
+              text: "#0369a1",
+              border: "rgba(14,165,233,0.35)",
+            }}
+          >
+            送信ではなく「置く」です
+          </Pill>
 
           {err ? (
-            <div style={{ fontSize: 12, color: "#991b1b", fontWeight: 800 }}>
+            <div style={{ fontSize: 13, color: "#991b1b", fontWeight: 800 }}>
               {err}
             </div>
           ) : null}
         </div>
 
-        {/* hidden input */}
         <input
           id="docport-file-input-hidden"
           type="file"

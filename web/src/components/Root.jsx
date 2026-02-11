@@ -5,7 +5,7 @@ export default function Root({ children }) {
     <div
       style={{
         minHeight: "100vh",
-        background: "#F5F8FC",
+        background: "transparent",
         fontFamily:
           "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       }}

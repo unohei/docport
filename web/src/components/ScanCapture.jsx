@@ -2,11 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { PDFDocument } from "pdf-lib";
 
 /**
- * ScanCapture.jsx
+ * ScanCapture.jsx（カラー版）
  * - getUserMedia でカメラ起動
  * - OpenCV.js で書類検出（エッジ→輪郭→四隅推定）
- * - Perspective Transform で台形補正
- * - adaptive threshold で白黒最適化（FAXっぽく）
+ * - Perspective Transform で台形補正（★カラー出力）
  * - pdf-lib で 1ページPDF化
  *
  * props:
@@ -23,7 +22,7 @@ export default function ScanCapture({
 }) {
   const videoRef = useRef(null);
   const rawCanvasRef = useRef(null); // キャプチャ用（元画像）
-  const outCanvasRef = useRef(null); // 補正結果（白黒）
+  const outCanvasRef = useRef(null); // 補正結果（★カラー）
   const streamRef = useRef(null);
 
   const [camOn, setCamOn] = useState(false);
@@ -36,9 +35,8 @@ export default function ScanCapture({
   const [deviceId, setDeviceId] = useState(""); // selected deviceId
 
   // ---- UI accents ----
-  const SKY = "#0ea5e9"; // DocPortのsky（統一色）
   const SKY_TEXT = "#0369a1";
-  const DEEP = "#0F172A"; // deepsea（カメラ起動に使う）
+  const DEEP = "#0F172A"; // deepsea（カメラ起動）
 
   const canUseMedia =
     typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
@@ -73,7 +71,6 @@ export default function ScanCapture({
       setDevices(vids);
       return vids;
     } catch {
-      // ignore
       return [];
     }
   };
@@ -102,12 +99,11 @@ export default function ScanCapture({
       return;
     }
 
-    // 先に video を必ず描画しておく（←これが黒画面/要素なしエラー対策）
+    // 先に video を描画（黒画面/要素なし対策）
     setCamOn(true);
     await sleep(0);
 
     try {
-      // 既に起動中なら一旦止める（切替時もここに来る）
       await stopCamera();
       setCamOn(true);
       await sleep(0);
@@ -128,20 +124,14 @@ export default function ScanCapture({
       streamRef.current = stream;
 
       const v = videoRef.current;
-      if (!v) {
-        throw new Error("video 要素が見つかりません（描画タイミング）");
-      }
+      if (!v) throw new Error("video 要素が見つかりません（描画タイミング）");
 
       v.srcObject = stream;
-
-      // iOS/一部Androidで play() が間に合わないことがあるので少し待つ
       await sleep(0);
       await v.play();
 
-      // デバイス一覧を更新（permission後の方がlabelが入る）
       const vids = (await refreshDevices()) || [];
 
-      // 初回だけ “背面っぽい” デバイスが見つかったら自動選択して切り替え（任意）
       if (!forceDeviceId && !deviceId && vids.length >= 2 && preferRearCamera) {
         const rearLike =
           vids.find((d) => /back|rear|environment/i.test(d.label)) || null;
@@ -165,7 +155,6 @@ export default function ScanCapture({
   };
 
   useEffect(() => {
-    // unmount cleanup
     return () => {
       stopCamera();
     };
@@ -189,6 +178,7 @@ export default function ScanCapture({
   }
 
   async function canvasToPdfFile(canvas, outName) {
+    // カラーのままPDFへ
     const dataUrl = canvas.toDataURL("image/png");
     const pngBytes = await fetch(dataUrl).then((r) => r.arrayBuffer());
 
@@ -237,23 +227,34 @@ export default function ScanCapture({
       const ctx = rawCanvas.getContext("2d");
       ctx.drawImage(video, 0, 0, cw, ch);
 
-      const src = cv.imread(rawCanvas);
-      const gray = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+      // ★srcRGBA（カラー）を保持
+      const srcRGBA = cv.imread(rawCanvas);
 
-      const blur = new cv.Mat();
-      cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
+      // 検出はグレーで
+      const gray = new cv.Mat();
+      cv.cvtColor(srcRGBA, gray, cv.COLOR_RGBA2GRAY);
+
+      // ★前処理：文字を潰しにくい & エッジ安定
+      const denoise = new cv.Mat();
+      cv.bilateralFilter(gray, denoise, 7, 50, 50);
 
       const edges = new cv.Mat();
-      cv.Canny(blur, edges, 60, 180);
+      cv.Canny(denoise, edges, 50, 150);
+
+      // ★エッジの欠けをつなぐ
+      const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+      cv.morphologyEx(edges, edges, cv.MORPH_CLOSE, kernel);
+      kernel.delete();
 
       const contours = new cv.MatVector();
       const hierarchy = new cv.Mat();
+
+      // ★外側輪郭のみ（誤検出を減らす）
       cv.findContours(
         edges,
         contours,
         hierarchy,
-        cv.RETR_LIST,
+        cv.RETR_EXTERNAL,
         cv.CHAIN_APPROX_SIMPLE,
       );
 
@@ -269,7 +270,13 @@ export default function ScanCapture({
 
         if (approx.rows === 4) {
           const area = cv.contourArea(approx);
-          if (area > bestArea) {
+          // 凸性チェック（紙以外のギザギザ排除）
+          const convex = cv.isContourConvex(approx);
+
+          // 面積しきい値（画面の12%は踏襲）
+          const okArea = area >= cw * ch * 0.12;
+
+          if (convex && okArea && area > bestArea) {
             bestArea = area;
             bestQuad?.delete?.();
             bestQuad = approx.clone();
@@ -283,11 +290,11 @@ export default function ScanCapture({
       contours.delete();
       hierarchy.delete();
       edges.delete();
-      blur.delete();
+      denoise.delete();
 
-      if (!bestQuad || bestArea < cw * ch * 0.12) {
+      if (!bestQuad) {
         gray.delete();
-        src.delete();
+        srcRGBA.delete();
         bestQuad?.delete?.();
         throw new Error(
           "書類の四隅を検出できませんでした。紙全体が映るように撮ってみてください。",
@@ -311,6 +318,7 @@ export default function ScanCapture({
       const heightB = dist(tl, bl);
       const maxH = Math.max(heightA, heightB);
 
+      // 出力解像（最低800幅）
       const dstW = Math.max(800, Math.round(maxW));
       const dstH = Math.round(maxW > 0 ? (maxH / maxW) * dstW : maxH);
 
@@ -336,11 +344,13 @@ export default function ScanCapture({
       ]);
 
       const M = cv.getPerspectiveTransform(srcTri, dstTri);
-      const warped = new cv.Mat();
       const dsize = new cv.Size(dstW, dstH);
+
+      // ★ここが本体：カラーで補正
+      const warpedColor = new cv.Mat();
       cv.warpPerspective(
-        gray,
-        warped,
+        srcRGBA,
+        warpedColor,
         M,
         dsize,
         cv.INTER_LINEAR,
@@ -348,29 +358,18 @@ export default function ScanCapture({
         new cv.Scalar(),
       );
 
-      const bw = new cv.Mat();
-      cv.adaptiveThreshold(
-        warped,
-        bw,
-        255,
-        cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv.THRESH_BINARY,
-        31,
-        10,
-      );
-
       outCanvas.width = dstW;
       outCanvas.height = dstH;
-      cv.imshow(outCanvas, bw);
+      cv.imshow(outCanvas, warpedColor);
 
-      bw.delete();
-      warped.delete();
+      // cleanup
+      warpedColor.delete();
       M.delete();
       srcTri.delete();
       dstTri.delete();
       bestQuad.delete();
       gray.delete();
-      src.delete();
+      srcRGBA.delete();
 
       const ymd = new Date();
       const stamp =
@@ -418,10 +417,9 @@ export default function ScanCapture({
     >
       <div style={{ fontWeight: 900, marginBottom: 6 }}>スキャンして置く</div>
       <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 12 }}>
-        紙を撮影 → 自動で台形補正 → 白黒最適化 → PDFにして「置く」に渡します
+        紙を撮影 → 自動で台形補正 → カラーPDFにして「置く」に渡します
       </div>
 
-      {/* ★重要：video は常に描画（camOnで表示/非表示だけ切替） */}
       <video
         ref={videoRef}
         playsInline
@@ -444,7 +442,6 @@ export default function ScanCapture({
             alignItems: "center",
           }}
         >
-          {/* ★カメラ起動：別色（deep） */}
           <button
             onClick={() => startCamera()}
             disabled={busy || !opencvReady}
@@ -501,7 +498,6 @@ export default function ScanCapture({
               alignItems: "center",
             }}
           >
-            {/* ★スキャン：主役ボタン（sky強調） */}
             <button
               onClick={captureAndProcess}
               disabled={busy}
@@ -536,7 +532,9 @@ export default function ScanCapture({
                 style={{
                   padding: "12px 14px",
                   borderRadius: 14,
-                  border: `1px solid ${busy ? "rgba(15,23,42,0.10)" : "rgba(14,165,233,0.22)"}`,
+                  border: `1px solid ${
+                    busy ? "rgba(15,23,42,0.10)" : "rgba(14,165,233,0.22)"
+                  }`,
                   background: busy
                     ? "rgba(15,23,42,0.06)"
                     : "rgba(255,255,255,0.75)",
@@ -577,7 +575,7 @@ export default function ScanCapture({
 
           <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
             <div style={{ fontSize: 12, opacity: 0.7 }}>
-              プレビュー（補正後の白黒）
+              プレビュー（補正後・カラー）
             </div>
             <canvas
               ref={outCanvasRef}
@@ -594,7 +592,6 @@ export default function ScanCapture({
         </>
       )}
 
-      {/* hidden raw canvas */}
       <canvas ref={rawCanvasRef} style={{ display: "none" }} />
 
       {err ? (

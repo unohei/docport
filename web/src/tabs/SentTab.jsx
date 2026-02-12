@@ -34,8 +34,6 @@ export default function SentTab({
     doc?.downloadUrl ||
     "";
 
-  console.log("🔎 SENT doc keys:", Object.keys(doc || {}));
-  console.log("🔎 SENT doc:", doc);
   const openDoc = (doc) => {
     if (openSentDocument) return openSentDocument(doc);
     const url = guessFileUrl(doc);

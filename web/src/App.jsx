@@ -367,6 +367,27 @@ export default function App() {
     }
   };
 
+  const openSentDocument = async (doc) => {
+    try {
+      if (!doc.file_key) return alert("file_keyが空です（旧データの可能性）");
+      if (isLegacyKey(doc.file_key))
+        return alert(
+          `旧データの可能性があるためDLをブロックしました。\nfile_key: ${doc.file_key}`,
+        );
+      if (isExpired(doc.expires_at)) return alert("期限切れのため開けません");
+      if (doc.status === "CANCELLED") return alert("取り消し済みです");
+
+      const { download_url } = await getPresignedDownload(doc.file_key);
+
+      // Android対策（ポップアップブロック回避の保険）
+      const w = window.open("about:blank", "_blank", "noopener,noreferrer");
+      if (w) w.location.href = download_url;
+      else window.open(download_url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      alert(`開くのに失敗: ${e?.message ?? e}`);
+    }
+  };
+
   const archiveDocument = async (doc) => {
     try {
       if (!doc?.id) return;
@@ -807,6 +828,7 @@ export default function App() {
               cancelDocument={cancelDocument}
               statusLabel={statusLabel}
               statusTone={statusTone}
+              openSentDocument={openSentDocument}
             />
           )}
         </div>

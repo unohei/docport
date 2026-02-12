@@ -34,11 +34,32 @@ export default function SentTab({
     doc?.downloadUrl ||
     "";
 
+  // const openDoc = (doc) => {
+  //   if (openSentDocument) return openSentDocument(doc);
+  //   const url = guessFileUrl(doc);
+  //   if (!url) return;
+  //   window.open(url, "_blank", "noopener,noreferrer");
+  // };
   const openDoc = (doc) => {
-    if (openSentDocument) return openSentDocument(doc);
+    console.log("🔎 SENT doc:", doc);
+
+    if (openSentDocument) {
+      console.log("➡ openSentDocument 経由で開く");
+      return openSentDocument(doc);
+    }
+
     const url = guessFileUrl(doc);
-    if (!url) return;
-    window.open(url, "_blank", "noopener,noreferrer");
+    console.log("🔗 guessFileUrl:", url);
+
+    if (!url) {
+      console.warn("❌ URLが見つからない");
+      return;
+    }
+
+    const w = window.open(url, "_blank", "noopener,noreferrer");
+    if (!w) {
+      console.warn("⚠ ポップアップがブロックされた可能性あり");
+    }
   };
 
   const canOpen = (doc) => !!openSentDocument || !!guessFileUrl(doc);

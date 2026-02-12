@@ -48,7 +48,7 @@ export default function SentTab({
               <div
                 key={doc.id}
                 style={{
-                  backgroundColor: "rgba(255, 252, 127, 0.65)",
+                  backgroundColor: "rgba(255, 254, 200, 0.55)",
                   border: "1px solid rgba(15,23,42,0.12)",
                   borderRadius: 12,
                   padding: 12,

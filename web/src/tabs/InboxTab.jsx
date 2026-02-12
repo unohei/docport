@@ -24,8 +24,11 @@ export default function InboxTab({
   archiveDocument,
   statusLabel,
   isLegacyKey,
-  statusTone, // ★追加
+  statusTone,
 }) {
+  const getThumbUrl = (doc) =>
+    doc?.thumb_url || doc?.thumbnail_url || doc?.thumbUrl || "";
+
   return (
     <Card>
       <div style={headerTitle}>受け取る</div>
@@ -74,12 +77,18 @@ export default function InboxTab({
           filteredInboxDocs.map((doc) => {
             const expired = isExpired(doc.expires_at);
             const legacy = isLegacyKey(doc.file_key);
+            const thumbUrl = getThumbUrl(doc);
+
+            const disabledOpen =
+              expired ||
+              doc.status === "CANCELLED" ||
+              doc.status === "ARCHIVED";
 
             return (
               <div
                 key={doc.id}
                 style={{
-                  backgroundColor: "rgba(186, 230, 253, 0.6)",
+                  backgroundColor: "rgba(186, 230, 253, 0.6)", // 付箋（ブルー）
                   border: "1px solid rgba(15,23,42,0.12)",
                   borderRadius: 12,
                   padding: 12,
@@ -96,21 +105,82 @@ export default function InboxTab({
                     flexWrap: "wrap",
                   }}
                 >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 800, fontSize: 16 }}>
-                      {nameOf(doc.from_hospital_id)}
-                    </div>
-                    <div style={{ fontSize: 14, opacity: 0.7, marginTop: 4 }}>
-                      {fmt(doc.created_at)}{" "}
-                      {doc.expires_at ? ` / 期限: ${fmt(doc.expires_at)}` : ""}
-                    </div>
-                    {doc.comment ? (
-                      <div style={{ fontSize: 14, opacity: 0.8, marginTop: 6 }}>
-                        {doc.comment}
+                  {/* 左：サムネ + 情報 */}
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 12,
+                      minWidth: 0,
+                      alignItems: "flex-start",
+                      flex: 1,
+                    }}
+                  >
+                    <button
+                      onClick={() => downloadDocument(doc)}
+                      disabled={disabledOpen}
+                      title={disabledOpen ? "開けません" : "開く"}
+                      style={{
+                        width: 86,
+                        height: 86,
+                        borderRadius: 10,
+                        border: "1px solid rgba(15,23,42,0.12)",
+                        background: "rgba(255,255,255,0.75)",
+                        padding: 0,
+                        cursor: disabledOpen ? "not-allowed" : "pointer",
+                        overflow: "hidden",
+                        flex: "0 0 auto",
+                        opacity: disabledOpen ? 0.6 : 1,
+                      }}
+                    >
+                      {thumbUrl ? (
+                        <img
+                          src={thumbUrl}
+                          alt="thumb"
+                          loading="lazy"
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                            display: "block",
+                          }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            display: "grid",
+                            placeItems: "center",
+                            fontSize: 22,
+                            opacity: 0.8,
+                          }}
+                        >
+                          📄
+                        </div>
+                      )}
+                    </button>
+
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 800, fontSize: 16 }}>
+                        {nameOf(doc.from_hospital_id)}
                       </div>
-                    ) : null}
+                      <div style={{ fontSize: 14, opacity: 0.7, marginTop: 4 }}>
+                        {fmt(doc.created_at)}{" "}
+                        {doc.expires_at
+                          ? ` / 期限: ${fmt(doc.expires_at)}`
+                          : ""}
+                      </div>
+                      {doc.comment ? (
+                        <div
+                          style={{ fontSize: 14, opacity: 0.8, marginTop: 6 }}
+                        >
+                          {doc.comment}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
 
+                  {/* 右：ステータス */}
                   <div
                     style={{
                       display: "flex",
@@ -122,6 +192,7 @@ export default function InboxTab({
                     <Pill tone={statusTone(doc)}>
                       {expired ? "期限切れ" : statusLabel(doc.status)}
                     </Pill>
+
                     {legacy ? (
                       <Pill
                         tone={{
@@ -136,6 +207,7 @@ export default function InboxTab({
                   </div>
                 </div>
 
+                {/* 下：ボタン（既存のまま） */}
                 <div
                   style={{
                     display: "flex",
@@ -146,14 +218,11 @@ export default function InboxTab({
                 >
                   <PrimaryButton
                     onClick={() => downloadDocument(doc)}
-                    disabled={
-                      expired ||
-                      doc.status === "CANCELLED" ||
-                      doc.status === "ARCHIVED"
-                    }
+                    disabled={disabledOpen}
                   >
                     開く
                   </PrimaryButton>
+
                   <SecondaryButton
                     onClick={() => archiveDocument(doc)}
                     disabled={doc.status === "ARCHIVED"}

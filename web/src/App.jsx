@@ -368,22 +368,33 @@ export default function App() {
   };
 
   const openSentDocument = async (doc) => {
+    // ✅ クリック直後（同期）にタブを開く
+    const w = window.open("about:blank", "_blank", "noopener,noreferrer");
+    if (!w) {
+      alert(
+        "ポップアップがブロックされています。ブラウザでこのサイトのポップアップを許可してください。",
+      );
+      return;
+    }
+
     try {
-      if (!doc.file_key) return alert("file_keyが空です（旧データの可能性）");
+      if (!doc.file_key)
+        throw new Error("file_keyが空です（旧データの可能性）");
       if (isLegacyKey(doc.file_key))
-        return alert(
-          `旧データの可能性があるためDLをブロックしました。\nfile_key: ${doc.file_key}`,
+        throw new Error(
+          `旧データの可能性があるためブロックしました。\nfile_key: ${doc.file_key}`,
         );
-      if (isExpired(doc.expires_at)) return alert("期限切れのため開けません");
-      if (doc.status === "CANCELLED") return alert("取り消し済みです");
+      if (isExpired(doc.expires_at))
+        throw new Error("期限切れのため開けません");
+      if (doc.status === "CANCELLED") throw new Error("取り消し済みです");
 
       const { download_url } = await getPresignedDownload(doc.file_key);
+      if (!download_url) throw new Error("download_url が取得できませんでした");
 
-      // Android対策（ポップアップブロック回避の保険）
-      const w = window.open("about:blank", "_blank", "noopener,noreferrer");
-      if (w) w.location.href = download_url;
-      else window.open(download_url, "_blank", "noopener,noreferrer");
+      // ✅ 事前に開いたタブを目的URLへ
+      w.location.href = download_url;
     } catch (e) {
+      w.close(); // 失敗したら about:blank を残さない
       alert(`開くのに失敗: ${e?.message ?? e}`);
     }
   };

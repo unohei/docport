@@ -368,18 +368,8 @@ export default function App() {
   };
 
   const openSentDocument = async (doc) => {
-    console.log("openSentDocument click: file_key=", doc?.file_key);
-
-    // ✅ クリック直後（同期）にタブを開く
+    // ① まず新タブを試す（許可されていればUX良し）
     const w = window.open("about:blank", "_blank", "noopener,noreferrer");
-    console.log("window opened?", !!w);
-
-    if (!w) {
-      alert(
-        "ポップアップがブロックされています。ブラウザでこのサイトのポップアップを許可してください。",
-      );
-      return;
-    }
 
     try {
       if (!doc.file_key)
@@ -392,29 +382,19 @@ export default function App() {
         throw new Error("期限切れのため開けません");
       if (doc.status === "CANCELLED") throw new Error("取り消し済みです");
 
-      const res = await getPresignedDownload(doc.file_key);
-      console.log("presign res =", res);
-
-      const { download_url } = res || {};
-      console.log("download_url =", download_url);
-
+      const { download_url } = await getPresignedDownload(doc.file_key);
       if (!download_url) throw new Error("download_url が取得できませんでした");
 
-      // （任意）ローディング表示：about:blank が一瞬出ても不安にならない
-      try {
-        w.document.write(
-          "<p style='font-family:system-ui;padding:16px'>読み込み中...</p>",
-        );
-        w.document.close();
-      } catch {
-        // ignore
+      // ② 新タブが開けたならそこへ遷移
+      if (w) {
+        w.location.href = download_url;
+        return;
       }
 
-      // ✅ 事前に開いたタブを目的URLへ
-      w.location.href = download_url;
+      // ③ ブロックされたら同一タブで開く（確実）
+      window.location.assign(download_url);
     } catch (e) {
-      console.error("openSentDocument error", e);
-      w.close(); // 失敗したら about:blank を残さない
+      if (w) w.close();
       alert(`開くのに失敗: ${e?.message ?? e}`);
     }
   };

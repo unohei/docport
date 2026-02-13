@@ -291,6 +291,45 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // ---- Render Warm-up（ログイン後1回だけAPIを温める）----
+  useEffect(() => {
+    if (!session) return;
+
+    let cancelled = false;
+
+    const warmUp = async () => {
+      try {
+        console.log("🔥 Warm-up start");
+
+        // ① /health があれば最優先で叩く（軽い）
+        const health = await fetch(`${API_BASE}/health`, {
+          method: "GET",
+          cache: "no-store",
+        });
+
+        if (!health.ok) {
+          // ② 無ければフォールバック（presignにダミーを投げる）
+          console.log("health not found, fallback warm-up");
+          await fetch(`${API_BASE}/presign-download?key=dummy`, {
+            method: "GET",
+            cache: "no-store",
+          }).catch(() => {});
+        }
+
+        if (!cancelled) console.log("🔥 Warm-up done");
+      } catch (e) {
+        // 失敗してもUXに影響させない（無視）
+        console.log("Warm-up skipped:", e?.message ?? e);
+      }
+    };
+
+    warmUp();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
   const myHospitalId = profile?.hospital_id ?? null;
 
   const myHospitalName = useMemo(() => {
@@ -532,7 +571,6 @@ export default function App() {
 
       setPreviewUrl(download_url);
 
-      // Inboxは「見たら既読」に寄せる（必要なければ opts を false に）
       if (opts?.markDownloaded && session?.user?.id) {
         if (doc.status !== "DOWNLOADED") {
           await supabase
@@ -556,9 +594,7 @@ export default function App() {
     }
   };
 
-  // Inbox用（既読化あり）
   const openInboxPreview = (doc) => openPreview(doc, { markDownloaded: true });
-  // Sent用（既読化なし）
   const openSentPreview = (doc) => openPreview(doc, { markDownloaded: false });
 
   const archiveDocument = async (doc) => {

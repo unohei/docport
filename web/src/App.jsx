@@ -1,8 +1,8 @@
-console.log("App.jsx LOADED: sky-blue + deepsea buttons (responsive)");
-
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "./supabaseClient";
 import DocPortLogo from "./assets/logo/docport-logo.svg";
+import { logger, notify } from "./utils/notify";
+import { fmt, isExpired } from "./utils/time";
 
 import Root from "./components/Root";
 import { useMediaQuery } from "./hooks/useMediaQuery";
@@ -18,17 +18,6 @@ import {
 import SendTab from "./tabs/SendTab";
 import InboxTab from "./tabs/InboxTab";
 import SentTab from "./tabs/SentTab";
-
-function fmt(dt) {
-  if (!dt) return "";
-  const d = new Date(dt);
-  return d.toLocaleString();
-}
-
-function isExpired(expiresAt) {
-  if (!expiresAt) return false;
-  return new Date(expiresAt).getTime() < Date.now();
-}
 
 function statusLabel(status) {
   if (status === "UPLOADED") return "未読";
@@ -49,7 +38,7 @@ function isLegacyKey(fileKey) {
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
-console.log("API_BASE =", API_BASE);
+logger.info("API_BASE =", API_BASE);
 
 // ---- Preview Modal (App内に同梱) ----
 function PreviewModal({
@@ -299,7 +288,7 @@ export default function App() {
 
     const warmUp = async () => {
       try {
-        console.log("🔥 Warm-up start");
+        logger.info("🔥 Warm-up start");
 
         // ① /health があれば最優先で叩く（軽い）
         const health = await fetch(`${API_BASE}/health`, {
@@ -309,17 +298,17 @@ export default function App() {
 
         if (!health.ok) {
           // ② 無ければフォールバック（presignにダミーを投げる）
-          console.log("health not found, fallback warm-up");
+          logger.info("health not found, fallback warm-up");
           await fetch(`${API_BASE}/presign-download?key=dummy`, {
             method: "GET",
             cache: "no-store",
           }).catch(() => {});
         }
 
-        if (!cancelled) console.log("🔥 Warm-up done");
+        if (!cancelled) logger.info("🔥 Warm-up done");
       } catch (e) {
         // 失敗してもUXに影響させない（無視）
-        console.log("Warm-up skipped:", e?.message ?? e);
+        logger.info("Warm-up skipped:", e?.message ?? e);
       }
     };
 
@@ -396,7 +385,7 @@ export default function App() {
       .single();
 
     if (profErr) {
-      alert(
+      notify.alert(
         `profiles取得に失敗: ${profErr.message}\n（profilesに紐付け済みか確認）`,
       );
       return;
@@ -407,7 +396,7 @@ export default function App() {
       .from("hospitals")
       .select("id, name, code, icon_url")
       .order("name", { ascending: true });
-    if (hsErr) return alert(`hospitals取得に失敗: ${hsErr.message}`);
+    if (hsErr) return notify.alert(`hospitals取得に失敗: ${hsErr.message}`);
     setHospitals(hs);
 
     const { data: inbox, error: inboxErr } = await supabase
@@ -417,7 +406,7 @@ export default function App() {
       )
       .eq("to_hospital_id", prof.hospital_id)
       .order("created_at", { ascending: false });
-    if (inboxErr) return alert(`inbox取得に失敗: ${inboxErr.message}`);
+    if (inboxErr) return notify.alert(`inbox取得に失敗: ${inboxErr.message}`);
     setInboxDocs(inbox ?? []);
 
     const { data: sent, error: sentErr } = await supabase
@@ -427,7 +416,7 @@ export default function App() {
       )
       .eq("from_hospital_id", prof.hospital_id)
       .order("created_at", { ascending: false });
-    if (sentErr) return alert(`sent取得に失敗: ${sentErr.message}`);
+    if (sentErr) return notify.alert(`sent取得に失敗: ${sentErr.message}`);
     setSentDocs(sent ?? []);
   };
 
@@ -439,8 +428,8 @@ export default function App() {
 
   const sendMagicLink = async () => {
     const { error } = await supabase.auth.signInWithOtp({ email });
-    if (error) alert(error.message);
-    else alert("メール送信しました（届いたリンクを開いてログイン）");
+    if (error) notify.alert(error.message);
+    else notify.alert("メール送信しました（届いたリンクを開いてログイン）");
   };
 
   const logout = async () => {
@@ -495,13 +484,14 @@ export default function App() {
   const createDocument = async () => {
     if (sending) return;
     try {
-      if (!myHospitalId) return alert("profileのhospital_idが取れてません");
-      if (!toHospitalId) return alert("宛先病院を選んでください");
+      if (!myHospitalId)
+        return notify.alert("profileのhospital_idが取れてません");
+      if (!toHospitalId) return notify.alert("宛先病院を選んでください");
       if (toHospitalId === myHospitalId)
-        return alert("自院宛は選べません（テストならOKにしても良い）");
-      if (!pdfFile) return alert("PDFを選択してください");
+        return notify.alert("自院宛は選べません（テストならOKにしても良い）");
+      if (!pdfFile) return notify.alert("PDFを選択してください");
       if (pdfFile.type !== "application/pdf")
-        return alert("PDFのみアップロードできます");
+        return notify.alert("PDFのみアップロードできます");
 
       setSending(true);
 
@@ -521,7 +511,7 @@ export default function App() {
         .select()
         .single();
 
-      if (error) return alert(`送信に失敗: ${error.message}`);
+      if (error) return notify.alert(`送信に失敗: ${error.message}`);
 
       await supabase.from("document_events").insert({
         document_id: data.id,
@@ -534,9 +524,9 @@ export default function App() {
       setPdfFile(null);
       await loadAll();
       setTab("sent");
-      alert("置きました（相手の受け取りBOXに入りました）");
+      notify.alert("置きました（相手の受け取りBOXに入りました）");
     } catch (e) {
-      alert(`失敗: ${e?.message ?? e}`);
+      notify.alert(`失敗: ${e?.message ?? e}`);
     } finally {
       setSending(false);
     }
@@ -552,14 +542,16 @@ export default function App() {
 
   const openPreview = async (doc, opts = { markDownloaded: false }) => {
     try {
-      if (!doc?.file_key) return alert("file_keyが空です（旧データの可能性）");
+      if (!doc?.file_key)
+        return notify.alert("file_keyが空です（旧データの可能性）");
       if (isLegacyKey(doc.file_key))
-        return alert(
+        return notify.alert(
           `旧データの可能性があるためブロックしました。\nfile_key: ${doc.file_key}`,
         );
-      if (isExpired(doc.expires_at)) return alert("期限切れのため開けません");
-      if (doc.status === "CANCELLED") return alert("取り消し済みです");
-      if (doc.status === "ARCHIVED") return alert("アーカイブ済みです");
+      if (isExpired(doc.expires_at))
+        return notify.alert("期限切れのため開けません");
+      if (doc.status === "CANCELLED") return notify.alert("取り消し済みです");
+      if (doc.status === "ARCHIVED") return notify.alert("アーカイブ済みです");
 
       setPreviewDoc(doc);
       setPreviewLoading(true);
@@ -615,7 +607,7 @@ export default function App() {
 
       await loadAll();
     } catch (e) {
-      alert(`アーカイブ失敗: ${e?.message ?? e}`);
+      notify.alert(`アーカイブ失敗: ${e?.message ?? e}`);
     }
   };
 
@@ -626,7 +618,7 @@ export default function App() {
       const expired = isExpired(doc.expires_at);
       const canCancel = doc.status === "UPLOADED" && !expired;
       if (!canCancel)
-        return alert("未読（UPLOADED）かつ期限内のみ取り消しできます");
+        return notify.alert("未読（UPLOADED）かつ期限内のみ取り消しできます");
 
       const ok = confirm(
         "この“置いた”共有を取り消しますか？（相手はDLできなくなります）",
@@ -646,7 +638,7 @@ export default function App() {
 
       await loadAll();
     } catch (e) {
-      alert(`取り消し失敗: ${e?.message ?? e}`);
+      notify.alert(`取り消し失敗: ${e?.message ?? e}`);
     }
   };
 
